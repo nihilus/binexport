@@ -15,12 +15,13 @@
 #include "third_party/zynamics/binexport/operand.h"
 
 #pragma warning(push, 0)
+#include <iterator>
 #include <sstream>
 #pragma warning(pop)
 
 Expressions Operand::expressions_;
 Operand::OperandCache Operand::operand_cache_;
-int Operand::global_id_ = 0;
+uint32_t Operand::global_id_ = 0;
 
 // Delete unreferenced operands from cache and relabel surviving ones so we'll
 // have continuous ids again.
@@ -77,12 +78,20 @@ int Operand::GetId() const {
   return id_;
 }
 
-Expressions::const_iterator Operand::GetFirstExpression() const {
+Expressions::const_iterator Operand::cbegin() const {
   return expressions_.begin() + expression_index_;
 }
 
-Expressions::const_iterator Operand::GetLastExpression() const {
-  return GetFirstExpression() + expression_count_;
+Expressions::const_iterator Operand::cend() const {
+  return begin() + expression_count_;
+}
+
+Expressions::iterator Operand::begin() const {
+  return expressions_.begin() + expression_index_;
+}
+
+Expressions::iterator Operand::end() const {
+  return begin() + expression_count_;
 }
 
 uint8_t Operand::GetExpressionCount() const {

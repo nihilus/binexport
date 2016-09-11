@@ -98,8 +98,7 @@ void WriteMnemonics(const Instructions& instructions,
 
 // Translates from BinDetego internal expression type to the expression type
 // used by the protocol buffer.
-BinExport2::Expression::Type ExpressionTypeToProtoType(
-    Expression::Type type) {
+BinExport2::Expression::Type ExpressionTypeToProtoType(Expression::Type type) {
   switch (type) {
     case Expression::TYPE_SYMBOL:
       return BinExport2::Expression::SYMBOL;
@@ -185,14 +184,11 @@ void WriteOperands(BinExport2* proto) {
     BinExport2::Operand* proto_operand(proto->add_operand());
     proto_operand->mutable_expression_index()->Reserve(
         operand->GetExpressionCount());
-    auto previous_expression = operand->GetFirstExpression();
-    for (auto expression = operand->GetFirstExpression();
-         expression != operand->GetLastExpression(); ++expression) {
-      QCHECK((*expression)->GetParent() !=
-                 (*previous_expression)->GetParent() ||
-             (*expression)->GetPosition() >=
-                 (*previous_expression)->GetPosition());
-      proto_operand->add_expression_index((*expression)->GetId() - 1);
+    const auto* previous_expression = *(operand->begin());
+    for (const auto* expression : *operand) {
+      QCHECK(expression->GetParent() != previous_expression->GetParent() ||
+             expression->GetPosition() >= previous_expression->GetPosition());
+      proto_operand->add_expression_index(expression->GetId() - 1);
       previous_expression = expression;
     }
   }
@@ -245,8 +241,7 @@ void WriteInstructions(
     }
     instruction_indices->push_back(
         std::make_pair(instruction.GetAddress(), proto->instruction_size()));
-    BinExport2::Instruction* proto_instruction(
-        proto->add_instruction());
+    BinExport2::Instruction* proto_instruction(proto->add_instruction());
     QCHECK_EQ(instruction.GetSize(), instruction.GetBytes().size());
     // Write the full instruction address iff:
     // - there is no previous instruction
@@ -267,10 +262,9 @@ void WriteInstructions(
     }
     proto_instruction->mutable_operand_index()->Reserve(
         instruction.GetOperandCount());
-    for (auto operand = instruction.GetFirstOperand();
-         operand != instruction.GetLastOperand(); ++operand) {
-      QCHECK_GT((*operand)->GetId(), 0);
-      proto_instruction->add_operand_index((*operand)->GetId() - 1);
+    for (const auto* operand : instruction) {
+      QCHECK_GT(operand->GetId(), 0);
+      proto_instruction->add_operand_index(operand->GetId() - 1);
     }
     WriteCallTargets(instruction.GetAddress(), address_references,
                      proto_instruction);
@@ -283,7 +277,7 @@ void WriteBasicBlocks(const Instructions& instructions,
                       const vector<pair<Address, int32>>& instruction_indices,
                       BinExport2* proto) {
   CHECK((instruction_indices.empty() && BasicBlock::blocks().empty()) ||
-         (!instruction_indices.empty() && !BasicBlock::blocks().empty()));
+        (!instruction_indices.empty() && !BasicBlock::blocks().empty()));
   proto->mutable_basic_block()->Reserve(BasicBlock::blocks().size());
   auto instruction_index_it = instruction_indices.begin();
   int id = 0;
@@ -390,8 +384,7 @@ void WriteFlowGraphs(const FlowGraph& flow_graph, BinExport2* proto) {
     auto back_edge = back_edges.begin();
     proto_flow_graph->mutable_edge()->Reserve(function.GetEdges().size());
     for (const FlowGraphEdge& edge : function.GetEdges()) {
-      BinExport2::FlowGraph::Edge* proto_edge =
-          proto_flow_graph->add_edge();
+      BinExport2::FlowGraph::Edge* proto_edge = proto_flow_graph->add_edge();
       const BasicBlock* source =
           CHECK_NOTNULL(function.GetBasicBlockForAddress(edge.source));
       const BasicBlock* target =
@@ -454,8 +447,7 @@ bool SortByAddress(const BinExport2::CallGraph::Vertex& one,
 // particular address.
 // It is a fatal error to look for an address that is not actually contained in
 // the graph.
-int32 GetVertexIndex(const BinExport2::CallGraph& call_graph,
-                     uint64 address) {
+int32 GetVertexIndex(const BinExport2::CallGraph& call_graph, uint64 address) {
   BinExport2::CallGraph::Vertex vertex;
   vertex.set_address(address);
   const auto& it =
@@ -471,8 +463,7 @@ int32 GetVertexIndex(const BinExport2::CallGraph& call_graph,
 
 void WriteCallGraph(const CallGraph& call_graph, const FlowGraph& flow_graph,
                     BinExport2* proto) {
-  BinExport2::CallGraph* proto_call_graph(
-      proto->mutable_call_graph());
+  BinExport2::CallGraph* proto_call_graph(proto->mutable_call_graph());
   proto_call_graph->mutable_vertex()->Reserve(flow_graph.GetFunctions().size());
   // Create used libraries list.
   std::vector<const LibraryManager::LibraryRecord*> used_libraries;
@@ -484,6 +475,7 @@ void WriteCallGraph(const CallGraph& call_graph, const FlowGraph& flow_graph,
 
   // Used for verifying that functions are sorted by address.
   uint64 previous_entry_point_address = 0;
+  map<string, int32> module_index;
   for (const auto& function_it : flow_graph.GetFunctions()) {
     const Function& function(*function_it.second);
     QCHECK_GE(function.GetEntryPoint(), previous_entry_point_address);
@@ -493,7 +485,8 @@ void WriteCallGraph(const CallGraph& call_graph, const FlowGraph& flow_graph,
     BinExport2::CallGraph::Vertex* proto_function(
         proto_call_graph->add_vertex());
     proto_function->set_address(function.GetEntryPoint());
-    const auto vertex_type = CallGraphVertexTypeToProtoType(function.GetType());
+    const auto vertex_type =
+        CallGraphVertexTypeToProtoType(function.GetType(false));
     if (vertex_type != BinExport2::CallGraph::Vertex::NORMAL) {
       // Only store if different from default value.
       proto_function->set_type(vertex_type);
@@ -512,12 +505,29 @@ void WriteCallGraph(const CallGraph& call_graph, const FlowGraph& flow_graph,
       // array of all known libraries).
       proto_function->set_library_index(use_index[library_index]);
     }
+    const string& module = function.GetModuleName();
+    if (!module.empty()) {
+      auto it = module_index.emplace(module, module_index.size());
+      proto_function->set_module_index(it.first->second);
+    }
+  }
+
+  if (module_index.size() > 0) {
+    proto->mutable_module()->Reserve(module_index.size());
+    // We are O(N^2) here by number of classes, shouldn't be a big deal.
+    for (int i = 0; i < module_index.size(); ++i) {
+      auto* module = proto->add_module();
+      module->set_name(std::find_if(
+          module_index.begin(), module_index.end(),
+          [i] (const std::pair<string, int32>& kv) -> bool {
+            return kv.second == i;
+          })->first);
+    }
   }
 
   proto_call_graph->mutable_edge()->Reserve(call_graph.GetEdges().size());
   for (const EdgeInfo& edge : call_graph.GetEdges()) {
-    BinExport2::CallGraph::Edge* proto_edge(
-        proto_call_graph->add_edge());
+    BinExport2::CallGraph::Edge* proto_edge(proto_call_graph->add_edge());
     const uint64 source_address(CHECK_NOTNULL(edge.function_)->GetEntryPoint());
     const uint64 target_address(edge.target_);
     proto_edge->set_source_vertex_index(
@@ -525,7 +535,6 @@ void WriteCallGraph(const CallGraph& call_graph, const FlowGraph& flow_graph,
     proto_edge->set_target_vertex_index(
         GetVertexIndex(*proto_call_graph, target_address));
   }
-
 
   proto->mutable_library()->Reserve(used_libraries.size());
   for (const auto* used : used_libraries) {
@@ -540,9 +549,10 @@ void WriteStrings(const AddressReferences& address_references,
                   const vector<pair<Address, int32>>& instruction_indices,
                   BinExport2* proto) {
   std::map<Address, const AddressReference*> string_address_to_reference;
-  std::map<StringPiece, int> string_to_string_index;
+  std::map<string, int> string_to_string_index;
   for (const auto& reference : address_references) {
-    if (reference.kind_ != TYPE_DATA_STRING) {
+    if (reference.kind_ != TYPE_DATA_STRING &&
+        reference.kind_ != TYPE_DATA_WIDE_STRING) {
       continue;
     }
     // String length must be > 0.
@@ -558,11 +568,18 @@ void WriteStrings(const AddressReferences& address_references,
         instruction->first != reference.source_) {
       continue;
     }
-    auto referenced_string = StringPiece(
-        reinterpret_cast<const char*>(&address_space[reference.target_]),
-        reference.size_);
-    auto it = string_to_string_index.emplace(referenced_string,
-                                             proto->string_table_size());
+
+    string content;
+    // TODO(timkornau): Add support for UTF16 strings.
+    if (reference.kind_ != TYPE_DATA_STRING) {
+      continue;
+    }
+    content =
+        string(reinterpret_cast<const char*>(&address_space[reference.target_]),
+               reference.size_);
+
+    auto it =
+        string_to_string_index.emplace(content, proto->string_table_size());
     // Deduplicate strings.
     if (it.second != false) {
       proto->add_string_table(it.first->first);
@@ -632,8 +649,7 @@ void WriteComments(const CallGraph& call_graph,
   }
 }
 
-void WriteSections(const AddressSpace& address_space,
-                   BinExport2* proto) {
+void WriteSections(const AddressSpace& address_space, BinExport2* proto) {
   for (const auto& data : address_space.data()) {
     auto* section_proto = proto->add_section();
     section_proto->set_address(data.first);
@@ -646,8 +662,7 @@ void WriteSections(const AddressSpace& address_space,
 
 // Writes a binary protocol buffer to the specified filename. Returns true if
 // successful. Logs an error and returns false if not.
-util::Status WriteProtoToFile(const string& filename,
-                              BinExport2* proto) {
+util::Status WriteProtoToFile(const string& filename, BinExport2* proto) {
   std::ofstream stream(filename, std::ios::binary | std::ios::out);
   if (!proto->SerializeToOstream(&stream)) {
     return util::Status(util::error::UNKNOWN,
@@ -676,14 +691,10 @@ util::Status BinExport2Writer::WriteToProto(
   meta_information->set_executable_name(executable_filename_);
   meta_information->set_executable_id(executable_hash_);
   meta_information->set_architecture_name(architecture_);
-#ifdef GOOGLE
-  const auto timestamp = ToUnixSeconds(base::Now());
-#else
   const auto timestamp =
       std::chrono::duration_cast<std::chrono::seconds>(
           std::chrono::system_clock::now().time_since_epoch())
           .count();
-#endif
   meta_information->set_timestamp(timestamp);
 
   WriteExpressions(proto);
@@ -697,8 +708,8 @@ util::Status BinExport2Writer::WriteToProto(
     WriteBasicBlocks(instructions, instruction_indices, proto);
     WriteComments(call_graph, instruction_indices, proto);
     WriteStrings(address_references, address_space, instruction_indices, proto);
-    WriteDataReferences(
-        address_references, address_space, instruction_indices, proto);
+    WriteDataReferences(address_references, address_space, instruction_indices,
+                        proto);
   }
   WriteFlowGraphs(flow_graph, proto);
   WriteCallGraph(call_graph, flow_graph, proto);

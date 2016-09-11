@@ -31,7 +31,8 @@ enum AddressReferenceType {
   TYPE_CALL_INDIRECT = 5,
   //  TYPE_CALL_INDIRECT_VIRTUAL  = 6,  // This is obsolete and unused.
   TYPE_DATA = 7,
-  TYPE_DATA_STRING = 8
+  TYPE_DATA_STRING = 8,
+  TYPE_DATA_WIDE_STRING = 9,
 };
 
 struct AddressReference {
@@ -71,8 +72,5 @@ typedef std::vector<AddressReference> AddressReferences;
 
 bool operator<(const AddressReference& one, const AddressReference& two);
 bool operator==(const AddressReference& one, const AddressReference& two);
-AddressReferences::const_iterator FindBySource(
-    const AddressReferences& address_references, Address address_start,
-    Address address_end);
 
 #endif  // THIRD_PARTY_ZYNAMICS_BINEXPORT_ADDRESS_REFERENCES_H_
